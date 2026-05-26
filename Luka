@@ -1,0 +1,600 @@
+-- ══════════════════════════════════════════════════════
+--           REDZ BOUNTY HUB - Blox Fruits
+--           Executor: Delta | Version: 3.0
+-- ══════════════════════════════════════════════════════
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualUser = game:GetService("VirtualUser")
+
+-- ══════════════════════════════════
+--          CONFIGURACIÓN
+-- ══════════════════════════════════
+
+local Settings = {
+    AutoHunt      = true,
+    MinBounty     = 1000,
+    TweenSpeed    = 350,
+    AttackRange   = 15,
+    SafeZoneCheck = true,
+    PVPCheck      = true,
+}
+
+local ServerHop = {
+    Enabled  = true,
+    Interval = 180,
+    Timer    = 180,
+}
+
+local AutoAttack = {
+    Enabled = true,
+    Range   = 20,
+}
+
+local KillCount  = 0
+local currentTween = nil
+
+-- ══════════════════════════════════
+--       DETECCIÓN ZONA SEGURA
+-- ══════════════════════════════════
+
+local function IsInSafeZone(player)
+    if not Settings.SafeZoneCheck then return false end
+    local char = player.Character
+    if not char then return false end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+
+    local safeZones = workspace:FindFirstChild("SafeZones")
+                   or workspace:FindFirstChild("SafeArea")
+                   or workspace:FindFirstChild("Zones")
+
+    if safeZones then
+        for _, zone in pairs(safeZones:GetChildren()) do
+            local zonePart = zone:IsA("Model") and zone.PrimaryPart or zone
+            if zonePart and zonePart:IsA("BasePart") then
+                local rel  = zonePart.CFrame:ToObjectSpace(CFrame.new(root.Position))
+                local size = zonePart.Size / 2
+                if math.abs(rel.X) < size.X and
+                   math.abs(rel.Y) < size.Y + 10 and
+                   math.abs(rel.Z) < size.Z then
+                    return true
+                end
+            end
+        end
+    end
+
+    local safeZoneNames = {"Starter","Town","SafeZone","Spawn","Hub","Port"}
+    for _, name in pairs(safeZoneNames) do
+        local found = workspace:FindFirstChild(name, true)
+        if found and found:IsA("BasePart") then
+            if (found.Position - root.Position).Magnitude < 60 then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+-- ══════════════════════════════════
+--        DETECCIÓN PVP OFF
+-- ══════════════════════════════════
+
+local function IsPVPDisabled(player)
+    if not Settings.PVPCheck then return false end
+    local char = player.Character
+    if not char then return false end
+
+    if char:FindFirstChild("PVPOff")
+    or char:FindFirstChild("NoPVP")
+    or char:FindFirstChild("SafeMode") then
+        return true
+    end
+
+    local pvpValue = player:FindFirstChild("PVP")
+    if pvpValue and pvpValue:IsA("BoolValue") and not pvpValue.Value then
+        return true
+    end
+
+    return false
+end
+
+-- ══════════════════════════════════
+--        VALIDAR OBJETIVO
+-- ══════════════════════════════════
+
+local function IsValidTarget(player)
+    if player == LocalPlayer then return false end
+    local char = player.Character
+    if not char then return false end
+    local hum = char:FindFirstChild("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    if IsInSafeZone(player) then return false end
+    if IsPVPDisabled(player) then return false end
+
+    local ls = player:FindFirstChild("leaderstats")
+    if ls then
+        local b = ls:FindFirstChild("Bounty") or ls:FindFirstChild("Festas")
+        if b and b.Value >= Settings.MinBounty then return true end
+    end
+
+    return false
+end
+
+-- ══════════════════════════════════
+--        TWEEN MOVEMENT
+-- ══════════════════════════════════
+
+local function TweenToTarget(target)
+    if not target or not target.Character then return end
+    local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+    local myChar     = LocalPlayer.Character
+    local myRoot     = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not targetRoot or not myRoot then return end
+
+    local dist = (targetRoot.Position - myRoot.Position).Magnitude
+    if dist <= Settings.AttackRange then return end
+
+    if currentTween then
+        currentTween:Cancel()
+        currentTween = nil
+    end
+
+    local goalCFrame = targetRoot.CFrame * CFrame.new(0, 0, -Settings.AttackRange)
+    local tweenTime  = dist / Settings.TweenSpeed
+
+    currentTween = TweenService:Create(
+        myRoot,
+        TweenInfo.new(tweenTime, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
+        {CFrame = goalCFrame}
+    )
+    currentTween:Play()
+end
+
+-- ══════════════════════════════════
+--       AUTO SELECCIÓN PIRATA
+-- ══════════════════════════════════
+
+local function SelectPirate()
+    local rs = game:GetService("ReplicatedStorage")
+    local teamRemote = rs:FindFirstChild("SelectTeam")
+                    or rs:FindFirstChild("ChooseTeam")
+                    or rs:FindFirstChild("TeamSelect")
+
+    if teamRemote then
+        teamRemote:FireServer("Pirates")
+        print("✅ Equipo Pirata seleccionado (Remote)")
+        return
+    end
+
+    task.spawn(function()
+        local timeout = 0
+        repeat
+            task.wait(0.5)
+            timeout += 0.5
+            for _, gui in pairs(LocalPlayer.PlayerGui:GetChildren()) do
+                for _, obj in pairs(gui:GetDescendants()) do
+                    if obj:IsA("TextButton") or obj:IsA("ImageButton") then
+                        local txt = obj:IsA("TextButton") and obj.Text:lower() or ""
+                        if obj.Name:lower():find("pirat") or txt:find("pirat") then
+                            obj.MouseButton1Click:Fire()
+                            print("✅ Botón Pirata clickeado (GUI)")
+                            return
+                        end
+                    end
+                end
+            end
+        until timeout >= 10
+    end)
+end
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(2)
+    SelectPirate()
+end)
+
+if LocalPlayer.Character then
+    task.wait(1)
+    SelectPirate()
+end
+
+-- ══════════════════════════════════
+--           SERVER HOP
+-- ══════════════════════════════════
+
+local function HopServer()
+    if currentTween then currentTween:Cancel() currentTween = nil end
+
+    local ok = pcall(function()
+        TeleportService:TeleportToPlaceInstance(
+            game.PlaceId,
+            HttpService:GenerateGUID(false),
+            LocalPlayer
+        )
+    end)
+
+    if not ok then
+        pcall(function()
+            TeleportService:Teleport(game.PlaceId, LocalPlayer)
+        end)
+    end
+end
+
+-- ══════════════════════════════════
+--           ANTI-AFK
+-- ══════════════════════════════════
+
+LocalPlayer.Idled:Connect(function()
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
+end)
+
+task.spawn(function()
+    while task.wait(60) do
+        local myChar = LocalPlayer.Character
+        local hum = myChar and myChar:FindFirstChild("Humanoid")
+        if hum then
+            local dirs = {
+                Vector3.new(1,0,0), Vector3.new(-1,0,0),
+                Vector3.new(0,0,1), Vector3.new(0,0,-1)
+            }
+            hum:Move(dirs[math.random(1, #dirs)], false)
+            task.wait(0.3)
+            hum:Move(Vector3.new(0,0,0), false)
+        end
+    end
+end)
+
+-- ══════════════════════════════════
+--           AUTO ATAQUE
+-- ══════════════════════════════════
+
+local function GetAttackTool()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    for _, tool in pairs(char:GetChildren()) do
+        if tool:IsA("Tool") then return tool end
+    end
+    return nil
+end
+
+local function ActivateAttack(tool)
+    pcall(function() tool:Activate() end)
+    pcall(function()
+        local remote = tool:FindFirstChildWhichIsA("RemoteEvent")
+                    or tool:FindFirstChildWhichIsA("RemoteFunction")
+        if remote then remote:FireServer() end
+    end)
+end
+
+task.spawn(function()
+    while task.wait(0.15) do
+        if not AutoAttack.Enabled or not Settings.AutoHunt then continue end
+        local myChar = LocalPlayer.Character
+        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if not myRoot then continue end
+
+        for _, player in pairs(Players:GetPlayers()) do
+            if not IsValidTarget(player) then continue end
+            local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            if not root then continue end
+            if (root.Position - myRoot.Position).Magnitude <= AutoAttack.Range then
+                local tool = GetAttackTool()
+                if tool then ActivateAttack(tool) end
+                break
+            end
+        end
+    end
+end)
+
+-- ══════════════════════════════════
+--              ESP
+-- ══════════════════════════════════
+
+local function CreateESP(player)
+    if player == LocalPlayer then return end
+
+    player.CharacterAdded:Connect(function(char)
+        task.wait(1)
+        local root = char:WaitForChild("HumanoidRootPart", 5)
+        if not root then return end
+
+        if root:FindFirstChild("BountyESP") then
+            root.BountyESP:Destroy()
+        end
+
+        local billboard = Instance.new("BillboardGui")
+        billboard.Name = "BountyESP"
+        billboard.AlwaysOnTop = true
+        billboard.Size = UDim2.new(0, 160, 0, 45)
+        billboard.StudsOffset = Vector3.new(0, 3.5, 0)
+        billboard.Parent = root
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, 0, 1, 0)
+        label.BackgroundTransparency = 1
+        label.TextStrokeTransparency = 0
+        label.Font = Enum.Font.GothamBold
+        label.TextSize = 13
+        label.Parent = billboard
+
+        RunService.Heartbeat:Connect(function()
+            if not root or not root.Parent then return end
+            local ls = player:FindFirstChild("leaderstats")
+            local b  = ls and (ls:FindFirstChild("Bounty") or ls:FindFirstChild("Festas"))
+            local bv = b and b.Value or 0
+
+            if IsInSafeZone(player) then
+                label.TextColor3 = Color3.fromRGB(100, 200, 255)
+                label.Text = "🔵 " .. player.Name .. "\n[ZONA SEGURA]"
+            elseif IsPVPDisabled(player) then
+                label.TextColor3 = Color3.fromRGB(180, 180, 180)
+                label.Text = "⚪ " .. player.Name .. "\n[PVP OFF]"
+            elseif bv >= Settings.MinBounty then
+                label.TextColor3 = Color3.fromRGB(255, 60, 60)
+                label.Text = "🏴 " .. player.Name .. "\n💰 " .. bv
+            else
+                label.TextColor3 = Color3.fromRGB(200, 200, 200)
+                label.Text = player.Name .. "\n💰 " .. bv
+            end
+        end)
+    end)
+
+    if player.Character then
+        player.CharacterAdded:Fire(player.Character)
+    end
+end
+
+for _, p in pairs(Players:GetPlayers()) do CreateESP(p) end
+Players.PlayerAdded:Connect(CreateESP)
+
+-- ══════════════════════════════════
+--              GUI
+-- ══════════════════════════════════
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "RedzBountyHub"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = game.CoreGui
+
+local Frame = Instance.new("Frame")
+Frame.Size = UDim2.new(0, 230, 0, 370)
+Frame.Position = UDim2.new(0, 12, 0.5, -185)
+Frame.BackgroundColor3 = Color3.fromRGB(15, 15, 22)
+Frame.BorderSizePixel = 0
+Frame.Parent = ScreenGui
+Instance.new("UICorner", Frame).CornerRadius = UDim.new(0, 10)
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(180, 0, 0)
+stroke.Thickness = 1.5
+stroke.Parent = Frame
+
+-- Título
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 38)
+TitleBar.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = Frame
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(1, 0, 1, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 15
+TitleLabel.Text = "⚔️ Redz Bounty Hub"
+TitleLabel.Parent = TitleBar
+
+-- Helpers
+local function MakeLabel(text, posY, color)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -14, 0, 22)
+    lbl.Position = UDim2.new(0, 7, 0, posY)
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3 = color or Color3.fromRGB(210, 210, 210)
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 12
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Text = text
+    lbl.Parent = Frame
+    return lbl
+end
+
+local function MakeButton(text, posY, color)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -16, 0, 30)
+    btn.Position = UDim2.new(0, 8, 0, posY)
+    btn.BackgroundColor3 = color
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 12
+    btn.Text = text
+    btn.BorderSizePixel = 0
+    btn.Parent = Frame
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    return btn
+end
+
+-- Labels
+local StatusLabel = MakeLabel("Estado: Buscando...",       44)
+local TargetLabel = MakeLabel("Objetivo: Ninguno",         66, Color3.fromRGB(255, 100, 100))
+local ZoneLabel   = MakeLabel("Zona: --",                  88, Color3.fromRGB(100, 200, 255))
+local TimerLabel  = MakeLabel("⏱ SV Hop: 3:00",           110, Color3.fromRGB(255, 200, 50))
+local KillLabel   = MakeLabel("💀 Kills: 0",               132, Color3.fromRGB(255, 80, 80))
+
+-- Botones
+local HuntBtn   = MakeButton("✅ Auto Hunt: ON",   162, Color3.fromRGB(0, 140, 0))
+local AttackBtn = MakeButton("⚔️ Auto Attack: ON", 198, Color3.fromRGB(140, 0, 140))
+local SafeBtn   = MakeButton("🔵 Safe Zone: ON",   234, Color3.fromRGB(0, 100, 180))
+local PVPBtn    = MakeButton("⚪ PVP Check: ON",   270, Color3.fromRGB(80, 80, 160))
+local HopBtn    = MakeButton("🔄 SV Hop: ON",      306, Color3.fromRGB(160, 100, 0))
+
+-- Toggles
+HuntBtn.MouseButton1Click:Connect(function()
+    Settings.AutoHunt = not Settings.AutoHunt
+    HuntBtn.BackgroundColor3 = Settings.AutoHunt
+        and Color3.fromRGB(0, 140, 0) or Color3.fromRGB(120, 0, 0)
+    HuntBtn.Text = Settings.AutoHunt and "✅ Auto Hunt: ON" or "❌ Auto Hunt: OFF"
+end)
+
+AttackBtn.MouseButton1Click:Connect(function()
+    AutoAttack.Enabled = not AutoAttack.Enabled
+    AttackBtn.BackgroundColor3 = AutoAttack.Enabled
+        and Color3.fromRGB(140, 0, 140) or Color3.fromRGB(60, 60, 60)
+    AttackBtn.Text = AutoAttack.Enabled and "⚔️ Auto Attack: ON" or "⚔️ Auto Attack: OFF"
+end)
+
+SafeBtn.MouseButton1Click:Connect(function()
+    Settings.SafeZoneCheck = not Settings.SafeZoneCheck
+    SafeBtn.BackgroundColor3 = Settings.SafeZoneCheck
+        and Color3.fromRGB(0, 100, 180) or Color3.fromRGB(60, 60, 60)
+    SafeBtn.Text = Settings.SafeZoneCheck and "🔵 Safe Zone: ON" or "🔵 Safe Zone: OFF"
+end)
+
+PVPBtn.MouseButton1Click:Connect(function()
+    Settings.PVPCheck = not Settings.PVPCheck
+    PVPBtn.BackgroundColor3 = Settings.PVPCheck
+        and Color3.fromRGB(80, 80, 160) or Color3.fromRGB(60, 60, 60)
+    PVPBtn.Text = Settings.PVPCheck and "⚪ PVP Check: ON" or "⚪ PVP Check: OFF"
+end)
+
+HopBtn.MouseButton1Click:Connect(function()
+    ServerHop.Enabled = not ServerHop.Enabled
+    HopBtn.BackgroundColor3 = ServerHop.Enabled
+        and Color3.fromRGB(160, 100, 0) or Color3.fromRGB(60, 60, 60)
+    HopBtn.Text = ServerHop.Enabled and "🔄 SV Hop: ON" or "🔄 SV Hop: OFF"
+    if ServerHop.Enabled then ServerHop.Timer = ServerHop.Interval end
+end)
+
+-- Drag
+local dragging, dragInput, dragStart, startPos
+TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = Frame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+TitleBar.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement then
+        dragInput = input
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        Frame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+-- ══════════════════════════════════
+--           KILL COUNTER
+-- ══════════════════════════════════
+
+local function WatchKills()
+    local ls = LocalPlayer:FindFirstChild("leaderstats")
+    if not ls then
+        LocalPlayer.ChildAdded:Connect(function(child)
+            if child.Name == "leaderstats" then WatchKills() end
+        end)
+        return
+    end
+
+    local kills = ls:FindFirstChild("Kills")
+               or ls:FindFirstChild("Bounty_Kills")
+               or ls:FindFirstChild("PlayerKills")
+
+    if kills then
+        local lastValue = kills.Value
+        kills.Changed:Connect(function(newValue)
+            if newValue > lastValue then
+                KillCount += (newValue - lastValue)
+                KillLabel.Text = "💀 Kills: " .. KillCount
+                StatusLabel.Text = "🎯 ¡Kill! Total: " .. KillCount
+                task.delay(2, function()
+                    if Settings.AutoHunt then
+                        StatusLabel.Text = "Estado: 🏃 Persiguiendo"
+                    end
+                end)
+            end
+            lastValue = newValue
+        end)
+    else
+        -- Fallback por proximidad al respawn
+        Players.PlayerAdded:Connect(function(player)
+            if player == LocalPlayer then return end
+            player.CharacterAdded:Connect(function()
+                task.wait(0.5)
+                local myRoot = LocalPlayer.Character
+                    and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                local theirRoot = player.Character
+                    and player.Character:FindFirstChild("HumanoidRootPart")
+                if myRoot and theirRoot then
+                    if (theirRoot.Position - myRoot.Position).Magnitude <= 50 then
+                        KillCount += 1
+                        KillLabel.Text = "💀 Kills: " .. KillCount
+                    end
+                end
+            end)
+        end)
+    end
+end
+
+WatchKills()
+
+-- ══════════════════════════════════
+--         LOOP PRINCIPAL
+-- ══════════════════════════════════
+
+RunService.Heartbeat:Connect(function()
+    if not Settings.AutoHunt then
+        StatusLabel.Text = "Estado: Pausado"
+        TargetLabel.Text = "Objetivo: Ninguno"
+        ZoneLabel.Text   = "Zona: --"
+        return
+    end
+
+    local bestTarget, highestBounty = nil, Settings.MinBounty
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if IsValidTarget(player) then
+            local ls = player:FindFirstChild("leaderstats")
+            local b  = ls and (ls:FindFirstChild("Bounty") or ls:FindFirstChild("Festas"))
+            if b and b.Value > highestBounty then
+                highestBounty = b.Value
+                bestTarget = player
+            end
+        end
+    end
+
+    if bestTarget then
+        TargetLabel.Text = "Objetivo: " .. bestTarget.Name
+        StatusLabel.Text = "Estado: 🏃 Persiguiendo"
+        ZoneLabel.Text   = "💰 Bounty: " .. highestBounty
+        TweenToTarget(bestTarget)
+    else
+        StatusLabel.Text = "Estado: 🔍 Buscando..."
+        TargetLabel.Text = "Objetivo: Ninguno"
+        ZoneLabel.Text   = "Sin objetivos válidos"
+        if currentTween then currentTween:Cancel() currentTween = nil end
+    end
+end)
+
+-- ══════════════════════════════════
+--         LOOP SERVER 
